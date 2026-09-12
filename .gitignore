@@ -1,0 +1,33 @@
+# ==== Visual Studio / .NET (proyecto NwdExporter) ====
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+.vs/
+
+# ==== PyInstaller ====
+build/
+dist/
+*.spec
+
+# ==== Archivos generados (se regeneran solos, no son código) ====
+*.csv
+*.obj
+*.ifc
+*.mtl
+
+# ==== Archivos de origen pesados (no deberían ir a GitHub) ====
+*.vue
+*.nwd
+*.nwc
+*.nwf
+*.mdb2
+*.rvt
+
+# ==== Carpetas de pruebas/resultados ====
+Prueba*/
+Pruebas/
+
+# ==== Windows / varios ====
+Thumbs.db
+desktop.ini

@@ -1,0 +1,249 @@
+INSTRUCCIONES - CONVERTIDOR NWD A IFC
+=======================================
+Última actualización: guarda este archivo junto con el proyecto y actualízalo
+si vuelves a modificar algo, para que siga siendo útil en el futuro.
+
+
+1. QUÉ HACE ESTO, EN UNA FRASE
+-------------------------------
+Convierte un modelo de Navisworks (.nwd) en un archivo IFC, conservando
+propiedades (incluyendo la ficha AWP con IWP), geometría real, colores y
+transparencia — todo con un solo botón dentro de Navisworks.
+
+
+2. LAS DOS PIEZAS DEL SISTEMA
+-------------------------------
+
+PIEZA 1: El plugin de Navisworks (C#)
+  - Carpeta: NwdExporter\ (proyecto de Visual Studio)
+  - Archivo principal: GenerarIfcCompletoPlugin.cs
+  - Qué hace: agrega un botón "Generar IFC completo" dentro de Navisworks.
+    Al darle clic, recorre el árbol del modelo, y para cada elemento (una
+    pieza real, no una carpeta) escribe:
+      a) Sus propiedades a un archivo .csv
+      b) Su geometría (triángulos + normales + color) a un archivo .obj
+    Luego llama automáticamente al Ejecutable (Pieza 2) para que construya
+    el IFC final a partir de esos dos archivos.
+
+PIEZA 2: El ejecutable construir_ifc.exe (Python empaquetado)
+  - Código fuente: construir_ifc.py
+  - Se empaqueta con PyInstaller para NO necesitar Python instalado en la
+    máquina donde se usa (ver sección 5 para cómo volver a empaquetarlo).
+  - Qué hace: lee el .csv y el .obj, arma un archivo IFC válido usando la
+    librería IfcOpenShell, y lo guarda donde se le indique.
+  - También puede usarse SOLO (doble clic directo, sin el plugin): en ese
+    caso te pregunta con ventanas qué archivos usar, en vez de recibirlos
+    como argumentos de línea de comandos.
+
+
+3. EL FLUJO COMPLETO, PASO A PASO
+
+  Navisworks (con el NWD abierto)
+        |
+        | [clic en "Generar IFC completo"]
+        v
+  GenerarIfcCompletoPlugin.cs
+        |
+        | recorre el árbol del modelo (todo, o solo lo seleccionado)
+        | escribe: propiedades.csv + geometria.obj
+        v
+  construir_ifc.exe  (se llama automáticamente, con esos dos archivos)
+        |
+        | lee el csv y el obj
+        | arma el IFC con IfcOpenShell
+        v
+  archivo .ifc final
+
+
+4. DECISIONES DE DISEÑO IMPORTANTES (y por qué)
+-------------------------------------------------
+Estas son cosas que costó mucho trabajo descubrir. Si algo se rompe en el
+futuro, revisa esta lista antes de nada.
+
+- SOLO SE EXPORTAN ELEMENTOS "HOJA" (sin hijos en el árbol) que tengan
+  alguna propiedad. Si se quita este filtro, se cuela el nodo raíz del
+  archivo completo (que arrastra TODA la geometría del modelo en un solo
+  elemento gigante y mal ubicado). Esto fue un bug real que costó mucho
+  encontrar.
+
+- CULTURA NUMÉRICA FORZADA A INVARIANTE (InvariantCulture) al inicio de
+  Execute(). Sin esto, en computadoras configuradas en español, los
+  números se escriben con COMA decimal en vez de PUNTO, lo cual corrompe
+  silenciosamente el archivo .obj (Blender/Navisworks lo malinterpretan).
+
+- LA GEOMETRÍA SE LEE VÍA LA API "COM" DE NAVISWORKS (ComApiBridge), NO la
+  API .NET normal — la API .NET no da acceso a los triángulos reales.
+  Detalle clave: hay que guardar "v1.coord" en una variable ANTES de
+  procesarlo (no usarlo directo en la misma línea), o falla en silencio
+  sin dar ningún triángulo. Nunca se encontró una explicación clara de
+  por qué, pero está confirmado que es necesario.
+
+- LA MATRIZ DE TRANSFORMACIÓN (rotación) de cada fragmento SÍ hace falta
+  para que la forma de cada pieza salga bien (sobre todo si una pieza
+  tiene varios fragmentos internos). Pero la TRASLACIÓN de esa misma
+  matriz da valores incorrectos (a veces error de decenas de km) — por
+  eso solo se usa la parte de rotación de la matriz, y la posición final
+  de cada pieza se calcula aparte, usando el bounding box que sí es
+  confiable (item.BoundingBox(), de la API .NET normal).
+
+- LAS UNIDADES DEL IFC SE DECLARAN EXPLÍCITAMENTE EN MILÍMETROS. Por
+  defecto, IfcOpenShell asume metros, y como los números de Navisworks
+  vienen en milímetros, sin esto todo sale 1000 veces más grande de lo
+  real (por eso "no se veía nada" en los visores, en un momento del
+  desarrollo).
+
+- LA FUNCIÓN "geometry.edit_object_placement" DE IFCOPENSHELL ESPERA
+  METROS, aunque el proyecto esté declarado en milímetros. Por eso, al
+  calcular la posición de cada pieza, se divide entre 1000 antes de
+  pasarla a esa función — aunque la malla en sí (CoordList) se guarda
+  directo en milímetros sin dividir. Es una inconsistencia real de la
+  librería, no un error nuestro.
+
+- COORDENADAS ORIGINALES (sin desplazamiento): en algún momento se agregó
+  un "desplazamiento global" para evitar problemas de precisión en
+  visores con números muy grandes (cientos de millones). Luego se
+  confirmó que el problema real era el bug de milímetros/metros de arriba
+  — una vez arreglado eso, las coordenadas reales SÍ se ven bien en los
+  visores. Por eso el desplazamiento quedó DESACTIVADO por defecto
+  (parámetro "usar_offset=0" en la llamada desde C#). Si en el futuro
+  vuelve a haber problemas de visualización con modelos en coordenadas
+  muy grandes, este es un sospechoso a revisar.
+
+- NORMALES (suavizado) SOLO EN SUPERFICIES DE CIVIL3D: se detecta si
+  algún PropertyCategory del elemento contiene la palabra "Civil". Si sí,
+  se piden y guardan normales (para que las superficies curvas de
+  civil se vean suaves). Si no, se omiten (para ahorrar peso). Esto es un
+  balance deliberado: pedir normales para TODO duplicó el peso del .obj
+  sin mejorar lo suficiente la vista de las tuberías, así que se dejó así.
+  Las tuberías/piezas normales pueden verse "planas" o sin sombra en
+  Navisworks por esto — se confirmó que en otros visores (ej. Augin) se
+  ven bien, así que es más un tema de cómo Navisworks renderiza mallas
+  sin normales que un defecto real del IFC.
+
+- DEDUPLICACIÓN DE VÉRTICES (soldadura): tanto en el .obj (lado C#) como
+  al construir el IFC (lado Python) se evita guardar el mismo punto
+  repetido para cada triángulo que lo comparte. El control de "qué tan
+  cerca cuentan como el mismo punto" es el deslizador de tolerancia en la
+  ventana de opciones del plugin (en milímetros). Subir este valor reduce
+  bastante el peso final, a cambio de algo de detalle geométrico fino.
+
+- COLOR Y TRANSPARENCIA se leen con la API .NET normal
+  (item.FindFirstGeometry().ActiveColor / .ActiveTransparency), NO con la
+  API COM. Es más simple y confiable que intentar leer color por vértice
+  vía la geometría COM (se probó y daba problemas).
+
+
+5. CÓMO VOLVER A EMPAQUETAR EL .EXE (cuando cambies construir_ifc.py)
+-------------------------------------------------------------------------
+El .exe es una "foto congelada" del script en el momento en que se generó.
+Si editas construir_ifc.py, TIENES que repetir esto para que el cambio
+se refleje en el plugin:
+
+  1. Abre el Símbolo del sistema / PowerShell.
+  2. cd "ruta a la carpeta del proyecto" (donde está construir_ifc.py)
+  3. python -m PyInstaller --onefile --collect-all ifcopenshell construir_ifc.py
+  4. Espera a que termine (varios minutos).
+  5. El resultado queda en la subcarpeta "dist\construir_ifc.exe"
+  6. Prueba el .exe solo (doble clic) antes de probarlo desde el plugin.
+
+El plugin recuerda dónde está el .exe automáticamente (te pregunta la
+primera vez, o si no lo encuentra donde lo dejaste la última vez) — no
+hace falta editar código para eso.
+
+
+5-BIS. MODELOS TIPO VUE / SMARTPLANT3D (propiedades desde base de datos
+       externa) — LECCIÓN APRENDIDA
+-------------------------------------------------------------------------
+Si un modelo viene de VUE + SmartPlant3D (o cualquier fuente con base de
+datos externa, ej. .mdb2) y la exportación de PROPIEDADES sale muy lenta
+(decenas de segundos, incluso minutos, para pocos cientos de elementos):
+el problema casi seguro es que Navisworks está consultando esa base de
+datos externa cada vez que se pide item.PropertyCategories. La solución
+NO está en este código — está en volver a publicar/generar el .nwd con
+las propiedades "incrustadas" (embebidas) en vez de enlazadas a la base
+externa (se hace desde la herramienta de origen / Navisworks Publisher,
+no desde este plugin). Una vez hecho eso, la exportación de propiedades
+pasa de decenas de segundos a pocos segundos.
+
+Para este tipo de modelos también existe una casilla en la ventana de
+opciones: "Buscar propiedades también en el nodo padre". Actívala solo
+cuando la necesites (ej. si ves que faltan fichas como "Smartplant3d",
+porque en esa fuente las propiedades viven en el nodo padre, no en la
+geometría misma) -- consulta el padre inmediato de cada pieza, con
+caché para no repetir la consulta si varias piezas comparten el mismo
+padre. Para modelos normales (Plant3D/Civil3D) déjala desactivada.
+
+
+6. CÓMO VOLVER A COMPILAR EL PLUGIN (cuando cambies el .cs)
+----------------------------------------------------------------
+  1. Abre el proyecto en Visual Studio (el archivo .sln dentro de
+     NwdExporter\).
+  2. Si es una instalación nueva de Visual Studio o de Navisworks, puede
+     que tengas que volver a agregar las referencias (ver sección 7).
+  3. Confirma que la plataforma de compilación sea x64 (Configuration
+     Manager, o el desplegable junto al botón de compilar).
+  4. Compilar > Compilar solución (F6). Debe decir "correcto", sin
+     errores (las advertencias en amarillo se pueden ignorar).
+  5. El .dll queda en: NwdExporter\NwdExporter\bin\x64\Debug\NwdExporter.dll
+  6. Copia ese .dll a la carpeta de plugins de Navisworks, reemplazando
+     el anterior (busca la ruta exacta en tu instalación, algo como
+     C:\Program Files\Autodesk\Navisworks Manage 20XX\Plugins\...).
+  7. Cierra y vuelve a abrir Navisworks por completo para que cargue la
+     versión nueva.
+
+
+7. REFERENCIAS QUE NECESITA EL PROYECTO DE VISUAL STUDIO
+-------------------------------------------------------------
+Si alguna vez hay que recrear el proyecto desde cero, estas son las
+referencias que hay que agregar (Explorador de soluciones > clic derecho
+en Referencias > Agregar referencia > Examinar), buscando en la carpeta
+de instalación de Navisworks (ej. C:\Program Files\Autodesk\Navisworks
+Manage 20XX\):
+
+  - Autodesk.Navisworks.Api.dll
+  - Autodesk.Navisworks.Api.Interop.ComApi.dll
+  - Autodesk.Navisworks.ComApi.dll   <- ojo, es distinto al anterior
+  - System.Windows.Forms (de la pestaña Ensamblados > Framework)
+
+Y la plataforma del proyecto debe ser x64 (no "Any CPU"), porque
+Navisworks es una aplicación de 64 bits.
+
+
+8. PROBLEMAS CONOCIDOS Y CÓMO DIAGNOSTICARLOS
+--------------------------------------------------
+- Si el botón no aparece en Navisworks: revisa que copiaste el .dll más
+  reciente (compara la fecha/hora del archivo con la hora de compilación),
+  y que cerraste Navisworks POR COMPLETO antes de volver a abrirlo.
+
+- Si "0 elementos con geometría": probablemente el .exe está desactualizado
+  (no se volvió a empaquetar después de un cambio en construir_ifc.py), o
+  hay un problema en la forma de leer "coord"/"normal" desde Navisworks
+  (ver el punto de "guardar en variable antes de usar" en la sección 4).
+
+- Si la barra de progreso del .exe no se mueve: revisa que
+  "PYTHONUNBUFFERED=1" siga estando en las variables de entorno del
+  proceso (EjecutarPython en el .cs), y que los print() de progreso en
+  Python tengan flush=True.
+
+- Si el IFC pesa demasiado: sube el deslizador de tolerancia en la
+  ventana de opciones. También puedes desactivar geometría/color/
+  propiedades individualmente ahí mismo si necesitas un archivo mínimo.
+
+- Si algo se ve "plano" o sin sombra en Navisworks (pero se ve bien en
+  otros visores): es esperado para elementos sin normales (todo lo que
+  no sea Civil3D). No es un bug del IFC.
+
+
+9. ARCHIVOS DE APOYO (diagnóstico, ya no imprescindibles)
+--------------------------------------------------------------
+Estos se usaron para encontrar y confirmar varios de los bugs de la
+sección 4. Ya no hacen falta para el uso normal, pero pueden servir si
+algo se rompe en el futuro y hay que investigar de nuevo:
+
+  - diagnosticar_ifc.py: inspecciona un IFC ya generado (cuántos
+    elementos tienen geometría, tamaños de malla, unidades, etc.)
+  - inspeccionar_obj.py: revisa la consistencia interna de un .obj
+    (conteos de líneas, bounding box y distancia entre elementos
+    consecutivos).
+  - verificar_alineacion.py: compara el bounding box del CSV contra el
+    bounding box real de la geometría del OBJ, para el mismo elemento.

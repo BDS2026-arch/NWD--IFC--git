@@ -1,0 +1,9 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="NwdExporter/NwdExporter.csproj" Id="189d4bc6-ff12-4675-86ff-730a620deb5d">
+    <Platform Solution="*|x64" Project="x64" />
+  </Project>
+</Solution>
